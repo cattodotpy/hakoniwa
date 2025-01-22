@@ -78,3 +78,13 @@ impl From<&str> for Stdio {
         }
     }
 }
+
+impl From<Vec<u8>> for Stdio {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self {
+            r#type: StdioType::ByteVector,
+            bytes,
+            ..Default::default()
+        }
+    }
+}
