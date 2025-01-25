@@ -1,6 +1,9 @@
 pub(crate) mod io {
     use nix::{fcntl, unistd};
-    use std::os::unix::io::RawFd;
+    use std::os::{
+        fd::{FromRawFd, OwnedFd},
+        unix::io::RawFd,
+    };
 
     pub(crate) enum FdState {
         Closed,
@@ -26,6 +29,10 @@ pub(crate) mod io {
 
         pub(crate) fn as_raw_fd(&self) -> RawFd {
             self.fd
+        }
+
+        pub(crate) fn to_owned(&self) -> OwnedFd {
+            unsafe { OwnedFd::from_raw_fd(self.fd) }
         }
     }
 

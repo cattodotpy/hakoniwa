@@ -11,7 +11,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs,
-    os::unix::io::RawFd,
+    os::{
+        fd::{AsRawFd, OwnedFd},
+        unix::io::RawFd,
+    },
     path::{Path, PathBuf},
     process,
     thread::{self, JoinHandle},
@@ -20,7 +23,8 @@ use std::{
 
 use crate::{
     child_process::{self as ChildProcess, result::ChildProcessResult},
-    contrib, Error, File, IDMap, Limits, Mount, Namespaces, Result, Seccomp, SeccompAction, Stdio,
+    contrib::{self, nix::io::Fd},
+    Error, File, IDMap, Limits, Mount, Namespaces, Result, Seccomp, SeccompAction, Stdio,
     StdioType,
 };
 
@@ -808,13 +812,22 @@ impl Executor {
                 .map(|_| ()),
             StdioType::ByteVector => {
                 let io_clone = io.clone();
+                let fd = pipe.1;
                 thread::spawn(move || {
                     let mut buf = io_clone.as_bytes();
 
                     while !buf.is_empty() {
-                        let len = unistd::write(pipe.1, &buf).unwrap_or(0);
-                        buf = &buf[len..];
+                        match unistd::write(fd.as_raw_fd(), buf) {
+                            Ok(0) => break,
+                            Ok(len) => buf = &buf[len..],
+                            Err(err) => {
+                                eprintln!("write failed: {}", err);
+                                break;
+                            }
+                        }
                     }
+
+                    // drop(fd);
                 });
                 Ok(())
             }
