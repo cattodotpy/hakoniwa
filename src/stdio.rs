@@ -1,6 +1,6 @@
 use std::os::unix::io::RawFd;
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub(crate) enum StdioType {
     #[default]
     Initial,
@@ -12,7 +12,7 @@ pub(crate) enum StdioType {
 ///
 /// See also [stdout](super::Executor::stdout()), [stderr](super::Executor::stderr()),
 /// and [stdin](super::Executor::stdin()) methods of [Executor](super::Executor).
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct Stdio {
     pub(crate) r#type: StdioType,
     fd: RawFd,

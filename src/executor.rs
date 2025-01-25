@@ -807,19 +807,15 @@ impl Executor {
                 .map_err(|err| Error::_ExecutorRunError(format!("dup failed: {}", err)))
                 .map(|_| ()),
             StdioType::ByteVector => {
-                // Assume this is a small write that will not fill the pipe buffer, so it will
-                // not block current thread, otherwise we need a thread::spawn.
-                let mut buf = io.as_bytes();
-                while !buf.is_empty() {
-                    match unistd::write(pipe.1, buf) {
-                        Ok(0) => return Ok(()),
-                        Ok(n) => buf = &buf[n..],
-                        Err(nix::errno::Errno::EINTR) => continue, // interrupted
-                        Err(e) => {
-                            return Err(Error::_ExecutorRunError(format!("write failed: {}", e)))
-                        }
+                let io_clone = io.clone();
+                thread::spawn(move || {
+                    let mut buf = io_clone.as_bytes();
+
+                    while !buf.is_empty() {
+                        let len = unistd::write(pipe.1, &buf).unwrap_or(0);
+                        buf = &buf[len..];
                     }
-                }
+                });
                 Ok(())
             }
         }
