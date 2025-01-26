@@ -2,8 +2,10 @@ use chrono::prelude::*;
 use libseccomp::ScmpSyscall;
 use nix::{
     fcntl::OFlag,
-    sys::signal::{self, Signal},
-    sys::wait,
+    sys::{
+        signal::{self, Signal},
+        wait,
+    },
     unistd::{self, ForkResult, Gid, Pid, Uid},
 };
 use path_abs::{self, PathAbs};
@@ -11,10 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs,
-    os::{
-        fd::{AsRawFd, OwnedFd},
-        unix::io::RawFd,
-    },
+    os::unix::io::RawFd,
     path::{Path, PathBuf},
     process,
     thread::{self, JoinHandle},
@@ -23,8 +22,7 @@ use std::{
 
 use crate::{
     child_process::{self as ChildProcess, result::ChildProcessResult},
-    contrib::{self, nix::io::Fd},
-    Error, File, IDMap, Limits, Mount, Namespaces, Result, Seccomp, SeccompAction, Stdio,
+    contrib, Error, File, IDMap, Limits, Mount, Namespaces, Result, Seccomp, SeccompAction, Stdio,
     StdioType,
 };
 
@@ -570,7 +568,8 @@ impl Executor {
         )?;
 
         // Write to stdin.
-        Self::stream_writer((in_pipe.0.as_raw_fd(), in_pipe.1.as_raw_fd()), &self.stdin)?;
+        let in_thr =
+            Self::stream_writer((in_pipe.0.as_raw_fd(), in_pipe.1.as_raw_fd()), &self.stdin)?;
 
         // Run & Wait.
         let mut result = match self.__run(&out_pipe, &err_pipe, in_pipe, hooks) {
@@ -581,6 +580,18 @@ impl Executor {
                 ExecutorResult::failure(&err)
             }
         };
+
+        // Wait for stdin to finish.
+        // in_pipe.1.close();
+        if let Some(in_thr) = in_thr {
+            let res = in_thr
+                .join()
+                .map_err(|_| Error::_ExecutorRunError("write stdin data failed".to_string()))?;
+
+            if !res {
+                eprintln!("warning: write stdin data failed");
+            }
+        }
 
         // Wait for stdout to finish.
         out_pipe.1.close();
@@ -630,7 +641,7 @@ impl Executor {
         let result = match unsafe { unistd::fork() } {
             Ok(ForkResult::Parent { child, .. }) => {
                 self.pid = Some(child);
-                self.run_in_parent(child, cpr_pipe, in_pipe, hooks)
+                self.run_in_parent(child, cpr_pipe, hooks)
             }
             Ok(ForkResult::Child) => self.run_in_child(&cpr_pipe, out_pipe, err_pipe, &in_pipe),
             Err(err) => ExecutorResult::failure(&format!("fork failed: {}", err)),
@@ -644,7 +655,7 @@ impl Executor {
         &self,
         child: Pid,
         (mut cpr_reader, mut cpr_writer): contrib::nix::io::Pipe,
-        (mut in_reader, mut in_writer): contrib::nix::io::Pipe,
+        // (mut in_reader, mut in_writer): contrib::nix::io::Pipe,
         hooks: HashMap<&str, &dyn Fn(&Self)>,
     ) -> ExecutorResult {
         // Run after_fork hook.
@@ -653,8 +664,8 @@ impl Executor {
         };
 
         // Close unused pipes.
-        in_reader.close();
-        in_writer.close();
+        // in_reader.close();
+        // in_writer.close();
 
         // Block until all data is received.
         cpr_writer.close();
@@ -804,32 +815,38 @@ impl Executor {
         }
     }
 
-    fn stream_writer(pipe: (RawFd, RawFd), io: &Stdio) -> Result<()> {
+    fn stream_writer(pipe: (RawFd, RawFd), io: &Stdio) -> Result<Option<JoinHandle<bool>>> {
         match io.r#type {
-            StdioType::Initial => Ok(()),
-            StdioType::Inherit => unistd::dup3(io.as_raw_fd(), pipe.0, OFlag::O_CLOEXEC)
-                .map_err(|err| Error::_ExecutorRunError(format!("dup failed: {}", err)))
-                .map(|_| ()),
+            StdioType::Initial => Ok(None),
+            StdioType::Inherit => {
+                unistd::dup3(io.as_raw_fd(), pipe.0, OFlag::O_CLOEXEC)
+                    .map_err(|err| Error::_ExecutorRunError(format!("dup failed: {}", err)))?;
+
+                Ok(None)
+            }
             StdioType::ByteVector => {
                 let io_clone = io.clone();
                 let fd = pipe.1;
-                thread::spawn(move || {
+                let handle = thread::spawn(move || {
                     let mut buf = io_clone.as_bytes();
 
                     while !buf.is_empty() {
-                        match unistd::write(fd.as_raw_fd(), buf) {
+                        match unistd::write(fd, buf) {
                             Ok(0) => break,
                             Ok(len) => buf = &buf[len..],
                             Err(err) => {
                                 eprintln!("write failed: {}", err);
-                                break;
+
+                                return false;
                             }
                         }
                     }
 
-                    // drop(fd);
+                    // close(fd).expect("Unable to close pipe."); // close the write end of the pipe
+
+                    true
                 });
-                Ok(())
+                Ok(Some(handle))
             }
         }
     }
